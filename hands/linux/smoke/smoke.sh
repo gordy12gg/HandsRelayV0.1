@@ -129,8 +129,17 @@ Terminal=false
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2;org.kde.KWin.EIS.RemoteDesktop
 EOF
 rm -f "$RUN_DIR/probe-desktop.png"
-gtk-launch org.gordy.handsrelay-probe 2>&1 | head -2
-for i in $(seq 1 40); do [ -f "$RUN_DIR/probe-desktop.png" ] && break; sleep 0.5; done
+# gtk-launch choked on this box in run 1 (GLib assertion); try it, then
+# gio launch, then KDE's kioclient — log which one actually fired.
+for launcher in gtk gio kio; do
+  case $launcher in
+    gtk) gtk-launch org.gordy.handsrelay-probe 2>&1 | head -2 ;;
+    gio) gio launch "$HOME/.local/share/applications/org.gordy.handsrelay-probe.desktop" 2>&1 | head -2 ;;
+    kio) kioclient exec "$HOME/.local/share/applications/org.gordy.handsrelay-probe.desktop" 2>&1 | head -2 ;;
+  esac
+  for i in $(seq 1 30); do [ -f "$RUN_DIR/probe-desktop.png" ] && break; sleep 0.5; done
+  [ -f "$RUN_DIR/probe-desktop.png" ] && { echo "probe launched via: $launcher"; break; }
+done
 if [ -f "$RUN_DIR/probe-desktop.png" ]; then
   echo "PASS stage2: .desktop-identity capture"
 else
@@ -157,15 +166,21 @@ else
     APP_PID=$!
     sleep 2
     echo "state:  $(curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/state)"
-    curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/screenshot \
-      -o "$RUN_DIR/app-shot.png" -D - | grep -i "x-screen\|HTTP/" \
-      && echo "app screenshot saved: $RUN_DIR/app-shot.png"
-    nohup "$EDITOR" >/dev/null 2>&1 &
+    CODE=$(curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/screenshot \
+      -o "$RUN_DIR/app-shot.png" -w "%{http_code}")
+    echo "app screenshot HTTP $CODE -> $RUN_DIR/app-shot.png"
+    echo "HANDS OFF mouse and keyboard for the next few seconds…"
+    : > "$RUN_DIR/scratch.txt"
+    nohup "$EDITOR" "$RUN_DIR/scratch.txt" >/dev/null 2>&1 &
     sleep 3
     curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
       -d '{"x": 500, "y": 300}' http://127.0.0.1:5000/click; echo " <- click"
     curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
       -d '{"text": "handsrelay p1 ok"}' http://127.0.0.1:5000/type; echo " <- type"
+    sleep 1
+    curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/screenshot \
+      -o "$RUN_DIR/post-type.png"
+    echo "post-type screenshot saved: $RUN_DIR/post-type.png (visual evidence)"
     echo
     echo "LOOK AT THE EDITOR: did 'handsrelay p1 ok' get typed into it?"
     read -r -p "Type YES if it did, NO if it didn't: " ANSWER

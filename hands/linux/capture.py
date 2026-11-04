@@ -120,7 +120,11 @@ async def _capture_async(member: str, args_prefix: list, options: dict) -> bytes
                                daemon=True)
     drainer.start()
 
-    bus = MessageBus(bus_type=BusType.SESSION)
+    # negotiate_unix_fd is load-bearing: ScreenShot2 takes the screenshot
+    # pipe as an 'h' argument, and unless fd passing was negotiated during
+    # bus auth the daemon strips it and KWin answers "No valid file
+    # descriptor" (dbus-fast defaults it to False; found in the P1 smoke).
+    bus = MessageBus(bus_type=BusType.SESSION, negotiate_unix_fd=True)
     try:
         await bus.connect()
         node = introspection.Node.parse(SCREENSHOT2_XML)
