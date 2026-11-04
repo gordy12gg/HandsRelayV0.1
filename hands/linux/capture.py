@@ -152,28 +152,38 @@ async def _capture_async(member: str, args_prefix: list, options: dict) -> bytes
     return data, results if isinstance(results, dict) else {}
 
 
-# QImage::Format values KWin may report for raw pipe data. In memory on
-# little-endian these 32-bit formats are all B,G,R,A byte order.
-_QIMAGE_FORMATS_32 = {4, 5, 6, 24, 25, 26}
+# QImage::Format values KWin may report for raw pipe data. On the
+# observed box (KWin 6.8.2) format 16 came back: RGBA8888, R,G,B,A in
+# memory. The 32-bit RGB32/ARGB32 family (4/5/6) is B,G,R,A in memory
+# on little-endian; RGBX8888 (15) is R,G,B,X.
+_QIMAGE_BGRA_FORMATS = {4, 5, 6}
+_QIMAGE_RGBA_FORMATS = {16, 17}
+_QIMAGE_RGBX_FORMATS = {15}
 
 
 def _image_from_raw(data: bytes, results: dict) -> Image.Image | None:
     """Rebuild an image from raw pipe bytes + the results dict, if the
-    dict carries geometry. ScreenShot2's pipe payload turned out not to
-    be the PNG this module first assumed (P1 smoke, run 4)."""
+    dict carries geometry. ScreenShot2's pipe payload is raw pixels
+    (results say type='raw'), not PNG (P1 smoke, run 4)."""
     try:
         w = int(results["width"])
         h = int(results["height"])
-        fmt = int(results.get("format", 5))
+        fmt = int(results.get("format", 16))
         stride = int(results.get("stride", w * 4))
     except Exception:
         return None
-    if fmt not in _QIMAGE_FORMATS_32 or stride < w * 4:
+    if stride < w * 4 or len(data) < stride * h:
         return None
-    if len(data) < stride * h:
+    if fmt in _QIMAGE_RGBA_FORMATS:
+        decoder = "RGBA"
+    elif fmt in _QIMAGE_BGRA_FORMATS:
+        decoder = "BGRA"
+    elif fmt in _QIMAGE_RGBX_FORMATS:
+        decoder = "RGBX"
+    else:
         return None
     img = Image.frombytes("RGBA", (w, h), data[: stride * h],
-                          "raw", "BGRA", stride, 1)
+                          "raw", decoder, stride, 1)
     return img.convert("RGB")
 
 

@@ -54,6 +54,13 @@ def test_raw_reconstruction():
     assert img is not None and img.size == (w, h), img
     r, g, b = img.getpixel((0, 0))
     assert (r, g, b) == (30, 20, 10), (r, g, b)
+    # format 16 = RGBA8888 (what KWin 6.8.2 actually sends): R,G,B,A
+    px16 = bytes([30, 20, 10, 255]) * (w * h)
+    img16 = capture._image_from_raw(px16, {"width": w, "height": h,
+                                           "format": 16,
+                                           "stride": w * 4})
+    assert img16 is not None
+    assert img16.getpixel((0, 0)) == (30, 20, 10), img16.getpixel((0, 0))
     assert capture._image_from_raw(px, {}) is None
     assert capture._image_from_raw(b"\x00" * 8,
                                    {"width": w, "height": h}) is None
