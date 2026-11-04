@@ -71,6 +71,9 @@ class GuardianClient:
     def stop(self, source="window"):
         return self._call({"op": "stop", "source": source})
 
+    def ping(self):
+        return self._call({"op": "ping"})
+
 
 class StatusWindow:
     def __init__(self, root, client):
@@ -136,16 +139,31 @@ class StatusWindow:
         threading.Thread(target=_run, daemon=True).start()
 
     def on_close(self):
-        # Upstream semantics: closing the window latches the stop.
-        try:
-            self.client.stop(source="window")
-        except Exception:
-            pass
-        self.root.destroy()
+        # Closing the window latches the stop — and the window only
+        # goes away once the stop is CONFIRMED. Silently closing over
+        # a failed stop request would leave actuation running with no
+        # visible control surface (external review, 2026-11-03).
+        for _ in range(3):
+            try:
+                reply = self.client.stop(source="window")
+                if isinstance(reply, dict) and reply.get("ok"):
+                    self.root.destroy()
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        self.state_label.config(text="CLOSE BLOCKED", fg="#c0392b")
+        self.detail_label.config(
+            text="Stop NOT confirmed by the guardian — this window "
+                 "stays open. Check the guardian, then close again.")
 
     # ---- refresh -----------------------------------------------------
 
     def refresh(self):
+        try:
+            self.client.ping()
+        except Exception:
+            pass  # the state call below surfaces a dead guardian
         try:
             st = self.client.state()
             if not isinstance(st, dict) or not st.get("ok"):

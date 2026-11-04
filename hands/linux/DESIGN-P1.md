@@ -119,3 +119,28 @@ class Actuator:  # protocol
 - `org.gordy.handsrelay.desktop` (session app identity for KWin restricted interfaces).
 - `handsrelay-resume` (root helper script: connects to the guardian socket and sends `resume`; installed root-owned, only reachable via pkexec + the polkit action).
 - `config.json.example` (guardian config: session_uid, panic combo, virtual-device name patterns, ydotoold socket path).
+
+## Hardening addendum (2026-11-03, external review)
+
+An outside review reproduced four gaps; all are fixed in guardian.py /
+status_window.py and pinned by new tests in test_p1_safety.py:
+
+1. **Cancellation generation.** The latch carries a generation counter,
+   bumped by every trip. Acts capture it on arrival; an act still queued
+   when a stop lands is discarded (`error_code: act_discarded`) even if
+   a resume happens first. STOP forgets pending work.
+2. **Whole-plan validation + finally-sweep.** `validate_steps` checks
+   every step (shape, type, fields, key names) before anything runs,
+   and act execution wraps in try/finally that releases all held inputs
+   on any exit — a non-dict step previously raised an uncaught
+   AttributeError and could strand a held key.
+3. **Owner-activity in the guardian.** The guardian itself refuses acts
+   while the owner is active (`owner_idle_min_seconds`, default 2.0,
+   error_code `owner_active`); the session-app check is now a courtesy
+   layer. The socket's same-UID trust boundary is unchanged and
+   documented: the root-owned latch/injection path is the hard wall.
+4. **Status-window liveness.** The window pings the guardian each
+   refresh; a watchdog latches the stop (`window-watchdog`) if a
+   once-reporting window goes silent for `window_liveness_seconds`
+   (default 15). The window's close handler now destroys the window
+   only after the guardian confirms the stop.

@@ -25,17 +25,21 @@ SESSION_UID = 1000
 STRANGER_UID = 1001
 
 
-def make_guardian(tmp):
+def make_guardian(tmp, overrides=None):
+    cfg_dict = {
+        "session_uid": SESSION_UID,
+        "actuator": "fake",
+        "state_dir": tmp,
+        "guardian_socket": os.path.join(tmp, "guardian.sock"),
+        "ydotoold_socket": os.path.join(tmp, "ydotoold.sock"),
+        "ydotoold_autostart": False,
+        "owner_idle_min_seconds": 0,
+    }
+    if overrides:
+        cfg_dict.update(overrides)
     cfg_path = os.path.join(tmp, "config.json")
     with open(cfg_path, "w") as f:
-        json.dump({
-            "session_uid": SESSION_UID,
-            "actuator": "fake",
-            "state_dir": tmp,
-            "guardian_socket": os.path.join(tmp, "guardian.sock"),
-            "ydotoold_socket": os.path.join(tmp, "ydotoold.sock"),
-            "ydotoold_autostart": False,
-        }, f)
+        json.dump(cfg_dict, f)
     cfg = guardian_mod.load_config(cfg_path)
     return guardian_mod.Guardian(cfg)
 
@@ -143,6 +147,101 @@ def test_restart_comes_back_stopped():
         assert g.handle_request({"op": "state"}, SESSION_UID)["stopped"] is False
         g2 = make_guardian(tmp)  # same state dir: a "restart"
         assert g2.handle_request({"op": "state"}, SESSION_UID)["stopped"] is True
+
+
+def test_queued_act_discarded_across_stop_resume():
+    """STOP forgets pending work: an act queued behind a running act
+    when the stop lands must NOT execute after a resume (external
+    review, 2026-11-03 — cancellation generation)."""
+    import threading
+    import time as _time
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp)
+        g.handle_request({"op": "resume"}, 0)
+        results = {}
+
+        def run(name, steps, gen=None):
+            results[name] = g.execute_act(steps, generation=gen)
+
+        t1 = threading.Thread(
+            target=run, args=("first", [{"t": "sleep", "s": 1.5}]))
+        t1.start()
+        _time.sleep(0.25)  # first act holds the act lock
+        gen = g.latch.generation()  # second act "arrives" now
+        t2 = threading.Thread(
+            target=run,
+            args=("second", [{"t": "keydown", "key": "a"}], gen))
+        t2.start()
+        _time.sleep(0.25)  # second act is queued on the lock
+        g.trip_stop("test")
+        g.resume()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        assert results["second"].get("error_code") == "act_discarded", \
+            results
+        key_calls = [c for c in g.actuator.calls if c[0] == "key"]
+        assert key_calls == [], key_calls
+
+
+def test_malformed_plan_never_executes():
+    """Whole-plan validation: a bad step anywhere means NOTHING runs,
+    so a held key can never be stranded by a malformed tail."""
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp)
+        g.handle_request({"op": "resume"}, 0)
+        for steps in (
+            [{"t": "keydown", "key": "ctrl"}, "junk"],
+            [{"t": "keydown", "key": "ctrl"}, {"t": "nope"}],
+            [{"t": "keydown", "key": "nosuchkey"}],
+            [{"t": "move", "x": "left", "y": 10}],
+        ):
+            r = g.execute_act(steps)
+            assert r["ok"] is False, (steps, r)
+            assert g.actuator.calls == [], (steps, g.actuator.calls)
+            assert g.actuator.held() == ([], [])
+
+
+def test_unexpected_actuator_error_sweeps_held():
+    """The finally-sweep: even an exception validation cannot foresee
+    leaves no input held."""
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp)
+        g.handle_request({"op": "resume"}, 0)
+
+        def boom(text):
+            raise RuntimeError("injected failure")
+
+        g.actuator.type_text = boom
+        r = g.execute_act([{"t": "keydown", "key": "ctrl"},
+                           {"t": "type", "text": "x"}])
+        assert r["ok"] is False, r
+        assert g.actuator.held() == ([], []), g.actuator.held()
+
+
+def test_owner_active_refused_in_guardian():
+    """Owner-activity is enforced by the guardian itself, not only by
+    the session app (external review, 2026-11-03)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp, {"owner_idle_min_seconds": 10 ** 9})
+        g.handle_request({"op": "resume"}, 0)
+        r = g.execute_act([{"t": "keydown", "key": "a"}])
+        assert r.get("error_code") == "owner_active", r
+        assert g.actuator.calls == []
+
+
+def test_window_liveness_watchdog():
+    """A status window that reported and then went silent (crash)
+    latches the stop; a window that never ran never triggers it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp, {"window_liveness_seconds": 5})
+        g.handle_request({"op": "resume"}, 0)
+        g.check_window_liveness()  # never pinged: no fire
+        assert g.latch.is_stopped() is False
+        g.note_window_ping()
+        g._window_last_seen -= 60  # window went silent a minute ago
+        g.check_window_liveness()
+        assert g.latch.is_stopped() is True
+        assert "window-watchdog" in (g.latch.snapshot()["reason"] or "")
 
 
 if __name__ == "__main__":

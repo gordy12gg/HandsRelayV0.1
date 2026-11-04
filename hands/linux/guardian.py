@@ -123,13 +123,23 @@ class Latch:
         self._stopped = True
         self._reason = "startup: fail-safe stopped"
         self._since = time.time()
+        # Cancellation generation: every trip bumps it. Acts capture the
+        # generation when they ARRIVE; an act still queued when a stop
+        # lands is discarded even if a resume happens before it runs —
+        # STOP means pending work is forgotten, not paused.
+        self._generation = 0
         self._persist()
+
+    def generation(self):
+        with self._lock:
+            return self._generation
 
     def snapshot(self):
         with self._lock:
             return {"stopped": self._stopped,
                     "reason": self._reason,
-                    "since": self._since}
+                    "since": self._since,
+                    "generation": self._generation}
 
     def is_stopped(self):
         with self._lock:
@@ -142,6 +152,7 @@ class Latch:
             self._stopped = True
             self._reason = reason
             self._since = time.time()
+            self._generation += 1
             self._persist()
             return changed
 
@@ -298,6 +309,8 @@ class Guardian:
         self._last_activity = self._started_at
         self._activity_lock = threading.Lock()
         self._ydotoold_proc = None
+        self._window_last_seen = None
+        self._window_lock = threading.Lock()
 
     # -- setup -----------------------------------------------------------
 
@@ -378,46 +391,131 @@ class Guardian:
         self.latch.clear()
         log.warning("guardian RESUMED by root helper (polkit-authenticated)")
 
+    # -- status-window liveness -------------------------------------------
+
+    def note_window_ping(self):
+        with self._window_lock:
+            self._window_last_seen = time.time()
+
+    def check_window_liveness(self):
+        """Latch the stop if a once-reporting status window went silent.
+
+        Never fires before the first ping: the window is optional, and
+        an install that never runs it must not be watchdog-stopped.
+        """
+        timeout = float(self.config.get("window_liveness_seconds", 15.0))
+        with self._window_lock:
+            last = self._window_last_seen
+        if last is None or self.latch.is_stopped():
+            return
+        if time.time() - last > timeout:
+            with self._window_lock:
+                self._window_last_seen = None
+            self.trip_stop("window-watchdog")
+
+    def _window_watchdog_loop(self):
+        while not self.shutdown.is_set():
+            try:
+                self.check_window_liveness()
+            except Exception as e:
+                log.error("window watchdog error: %s", e)
+            self.shutdown.wait(2.0)
+
     # -- act execution -------------------------------------------------------
 
-    def execute_act(self, steps):
-        """Execute one act's step list serially.
+    # Step types the executor understands, with their required fields.
+    _STEP_FIELDS = {
+        "move": ("x", "y"),
+        "button": ("button", "down"),
+        "key": ("key",),
+        "keydown": ("key",),
+        "keyup": ("key",),
+        "scroll": (),
+        "sleep": (),
+        "type": (),
+    }
 
-        The latch is checked before the first step and between every
-        pair of steps; if it trips mid-act, remaining steps are dropped
-        and whatever is held is swept. After a *successful* act, any
-        input still held is also swept: well-formed plans pair every
-        keydown with a keyup inside the same act (DESIGN-P1.md), so a
-        leftover means a malformed plan, and a stuck key is never an
-        acceptable outcome.
+    @classmethod
+    def validate_steps(cls, steps):
+        """Validate a whole act BEFORE anything executes.
+
+        Returns an error string, or None when the plan is well-formed.
+        A malformed plan must never partially execute: catching a bad
+        step halfway through is how a held Ctrl survives (external
+        review, 2026-11-03).
         """
         if not isinstance(steps, list):
-            return {"ok": False, "error": "steps must be a list"}
+            return "steps must be a list"
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                return "step %d is not an object" % i
+            t = step.get("t")
+            if t not in cls._STEP_FIELDS:
+                return "step %d: unknown step type: %r" % (i, t)
+            for field in cls._STEP_FIELDS[t]:
+                if field not in step:
+                    return "step %d (%s): missing field %r" % (i, t, field)
+            if t in ("key", "keydown", "keyup"):
+                try:
+                    keycode_for(step["key"])
+                except Exception:
+                    return "step %d: unknown key: %r" % (i, step["key"])
+            if t == "move":
+                for axis in ("x", "y"):
+                    if not isinstance(step[axis], (int, float)):
+                        return "step %d: %s must be a number" % (i, axis)
+            if t == "type" and not isinstance(step.get("text", ""), str):
+                return "step %d: text must be a string" % i
+        return None
+
+    def execute_act(self, steps, generation=None):
+        """Execute one act's step list serially.
+
+        Guarantees, in order: the whole plan is validated before the
+        first step runs; an act that arrived before an emergency stop
+        (generation mismatch) is discarded even if a resume beat it to
+        the lock; the latch is checked before the first step and
+        between every pair of steps; the owner's own recent activity
+        refuses the act here in the guardian, not only in the session
+        app; and a finally-sweep releases every held input on ANY exit
+        path, expected or not — a stuck key is never an outcome.
+        """
+        error = self.validate_steps(steps)
+        if error:
+            return {"ok": False, "error": error}
         with self._act_lock:
+            if (generation is not None
+                    and generation != self.latch.generation()):
+                return {"ok": False, "error_code": "act_discarded",
+                        "error": "act arrived before an emergency stop; "
+                                 "discarded"}
             if self.latch.is_stopped():
                 return {"ok": False, "error_code": "emergency_stop"}
+            idle_min = float(self.config.get("owner_idle_min_seconds", 2.0))
+            if self.idle_seconds() < idle_min:
+                return {"ok": False, "error_code": "owner_active",
+                        "error": "owner active"}
             begin = getattr(self.actuator, "begin_act", None)
             if callable(begin):
                 begin()
             try:
                 for step in steps:
                     if self.latch.is_stopped():
-                        self.actuator.release_all()
                         return {"ok": False,
                                 "error_code": "emergency_stop"}
                     self._execute_step(step)
-            except (ActuatorError, KeyError, ValueError, TypeError) as e:
-                # A failed act must not leave inputs down either.
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+            finally:
                 try:
-                    self.actuator.release_all()
+                    keys, buttons = self.actuator.held()
+                    if keys or buttons:
+                        log.warning("act exiting with inputs held "
+                                    "(keys=%s buttons=%s); sweeping",
+                                    keys, buttons)
+                        self.actuator.release_all()
                 except Exception:
                     pass
-                return {"ok": False, "error": str(e)}
-            keys, buttons = self.actuator.held()
-            if keys or buttons:
-                log.warning("act ended with inputs still held "
-                            "(keys=%s buttons=%s); sweeping", keys, buttons)
-                self.actuator.release_all()
             return {"ok": True}
 
     def _execute_step(self, step):
@@ -461,10 +559,17 @@ class Guardian:
         if op == "activity":
             return {"ok": True, "idle_seconds": self.idle_seconds()}
         if op == "act":
-            # Defense in depth: the latch check lives in execute_act,
-            # before and between steps; this is the same code path the
-            # session app hits, so there is no way to act while stopped.
-            return self.execute_act(req.get("steps"))
+            # The generation is captured at ARRIVAL, before the act can
+            # queue on the act lock: a stop that lands while this act
+            # waits discards it, even across a resume (see Latch).
+            return self.execute_act(req.get("steps"),
+                                    generation=self.latch.generation())
+        if op == "ping":
+            # Status-window heartbeat. If a window that was reporting
+            # goes silent, the watchdog latches the stop — a crashed
+            # control surface must never leave actuation unsupervised.
+            self.note_window_ping()
+            return {"ok": True}
         if op == "stop":
             self.trip_stop(req.get("source", "api"))
             return {"ok": True, "stopped": True}
@@ -540,6 +645,8 @@ class Guardian:
                             "until the group exists)", group)
         srv.listen(16)
         srv.settimeout(0.5)
+        threading.Thread(target=self._window_watchdog_loop,
+                         name="window-watchdog", daemon=True).start()
         log.info("guardian listening on %s (session_uid=%s, actuator=%s)",
                  sock_path, self.config["session_uid"], self.actuator.name)
         while not self.shutdown.is_set():

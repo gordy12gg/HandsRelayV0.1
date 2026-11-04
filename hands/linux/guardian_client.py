@@ -143,3 +143,8 @@ class GuardianClient:
             raise ValueError(
                 f"stop source must be one of {_STOP_SOURCES}, got {source!r}")
         return self._request({"op": "stop", "source": source})
+
+    def ping(self) -> dict:
+        """Status-window heartbeat: keeps the guardian's window
+        watchdog from latching the stop."""
+        return self._request({"op": "ping"})
