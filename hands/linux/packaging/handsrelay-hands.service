@@ -1,0 +1,20 @@
+[Unit]
+Description=HandsRelay session hands — Linux port (session component, no injection capability)
+Documentation=file:///usr/lib/handsrelay/DESIGN-P1.md
+# Needs the graphical session (KWin ScreenShot2 capture) and the
+# guardian's IPC socket. The guardian may be stopped — that is a normal
+# state; /state reports it and act routes answer 423.
+After=graphical-session.target handsrelay-guardian.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Installed layout: hands_linux.py next to guardian.py; motion planning
+# reuses hands/motion.py from the same tree (see install notes in
+# DESIGN-P1.md). Adjust the path to the real install location.
+ExecStart=/usr/bin/python3 /usr/lib/handsrelay/hands_linux.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

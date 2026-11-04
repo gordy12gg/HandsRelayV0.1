@@ -1,0 +1,46 @@
+[Unit]
+Description=HandsRelay guardian — emergency-stop latch and sole input-injection path (Linux port)
+Documentation=file:///usr/lib/handsrelay/DESIGN-P1.md
+After=local-fs.target
+# The guardian must exist (stopped) before the session hands start.
+Before=handsrelay-hands.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/lib/handsrelay/guardian.py --config /etc/handsrelay-guardian/config.json
+# A crash or restart comes back STOPPED by design (the latch fail-safe
+# lives in guardian.py); on-failure is enough — a clean exit stays down.
+Restart=on-failure
+RestartSec=2
+
+# /run/handsrelay-guardian (guardian.sock, ydotoold.sock) and
+# /var/lib/handsrelay-guardian (latch.json), created root-owned.
+RuntimeDirectory=handsrelay-guardian
+RuntimeDirectoryMode=0750
+StateDirectory=handsrelay-guardian
+StateDirectoryMode=0700
+
+# --- Hardening -----------------------------------------------------------
+# The guardian is root and holds /dev/input + /dev/uinput; the sandbox
+# below is what keeps "root daemon" from meaning "whole box". It needs:
+# read/write on the input devices (evdev listeners + its ydotoold) and
+# its two state dirs, unix sockets only, and nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/run/handsrelay-guardian /var/lib/handsrelay-guardian /dev/input /dev/uinput
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+DeviceAllow=/dev/input rw
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+
+[Install]
+WantedBy=multi-user.target

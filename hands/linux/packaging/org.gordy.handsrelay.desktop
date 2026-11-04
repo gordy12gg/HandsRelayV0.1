@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=HandsRelay
+Comment=HandsRelay session hands (Linux port) — capture and planning; injection lives in the root guardian
+Exec=/usr/bin/python3 /usr/lib/handsrelay/hands_linux.py
+Terminal=false
+NoDisplay=true
+Categories=Utility;
+# KWin restricted D-Bus interfaces this app identity may use:
+# ScreenShot2 for capture, EIS.RemoteDesktop for the follow-up EisActuator
+# handshake (the fd is passed to the guardian; injection stays there).
+# Keep this file's contents pinned and auditable (SCOPE.md §3): the
+# interface grant attaches to this identity.
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2;org.kde.KWin.EIS.RemoteDesktop

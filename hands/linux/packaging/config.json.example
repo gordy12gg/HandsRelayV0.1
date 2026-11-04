@@ -1,0 +1,20 @@
+{
+  "actuator": "ydotool",
+  "guardian_socket": "/run/handsrelay-guardian/guardian.sock",
+  "panic_keys": [
+    "ctrl",
+    "alt",
+    "esc"
+  ],
+  "session_uid": 1000,
+  "socket_group": "handsrelay",
+  "state_dir": "/var/lib/handsrelay-guardian",
+  "virtual_device_name_patterns": [
+    "ydotool",
+    "libei",
+    "eis",
+    "virtual"
+  ],
+  "ydotoold_autostart": true,
+  "ydotoold_socket": "/run/handsrelay-guardian/ydotoold.sock"
+}

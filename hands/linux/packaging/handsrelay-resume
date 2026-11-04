@@ -1,0 +1,62 @@
+#!/usr/bin/python3
+"""handsrelay-resume — the only road back from an emergency stop.
+
+Installed root-owned at /usr/lib/handsrelay/handsrelay-resume and run
+exclusively via:
+
+    pkexec /usr/lib/handsrelay/handsrelay-resume
+
+pkexec gates that with the polkit action org.gordy.handsrelay.resume
+(auth_admin, no authorization retention, active console only), so by
+the time this script runs, a human at the console has just typed an
+admin password. The script itself is tiny on purpose: connect to the
+guardian socket, send {"op":"resume"}, print the reply.
+
+The guardian checks SO_PEERCRED and refuses resume from any peer whose
+UID is not 0 — this helper runs as root under pkexec, which is exactly
+the credential the guardian demands. A same-UID process in the session
+cannot fake this: it cannot become root, and it cannot reuse a cached
+polkit grant because the action retains none.
+"""
+
+import json
+import os
+import socket
+import sys
+
+DEFAULT_SOCKET = "/run/handsrelay-guardian/guardian.sock"
+
+
+def main(argv):
+    sock_path = (argv[1] if len(argv) > 1
+                 else os.environ.get("HANDSRELAY_GUARDIAN_SOCK",
+                                     DEFAULT_SOCKET))
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5.0)
+    try:
+        conn.connect(sock_path)
+    except OSError as e:
+        print("handsrelay-resume: cannot reach guardian at %s: %s"
+              % (sock_path, e), file=sys.stderr)
+        return 1
+    try:
+        conn.sendall(b'{"op":"resume"}\n')
+        f = conn.makefile("rb")
+        line = f.readline()
+    except OSError as e:
+        print("handsrelay-resume: IPC failed: %s" % e, file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    try:
+        resp = json.loads(line.decode("utf-8"))
+    except Exception:
+        print("handsrelay-resume: unreadable guardian reply: %r" % line,
+              file=sys.stderr)
+        return 1
+    print(json.dumps(resp))
+    return 0 if resp.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

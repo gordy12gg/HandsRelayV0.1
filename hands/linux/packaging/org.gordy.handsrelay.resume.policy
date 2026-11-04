@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>HandsRelay</vendor>
+  <vendor_url>https://github.com/gordy12gg/HandsRelayV0.1</vendor_url>
+
+  <!--
+    Resume after an emergency stop.
+
+    Deliberate choices (SCOPE.md §3, adopted from review):
+      * auth_admin — every resume is a fresh admin authentication.
+        There is intentionally NO auth_admin_keep variant anywhere in
+        this file: polkit's implicit "_keep" retention would cache the
+        authorization and let a later resume through with no password,
+        which would make the stop decorative.
+      * allow_active only — inactive/remote subjects get "no", so the
+        person authenticating is at the active local console.
+      * exec.path pins the one binary pkexec may run under this action:
+        the root-owned helper that asks the guardian to resume. The
+        guardian additionally refuses resume from any non-root peer, so
+        this action is the only road in.
+  -->
+  <action id="org.gordy.handsrelay.resume">
+    <description>Resume HandsRelay after an emergency stop</description>
+    <message>Authentication is required to resume HandsRelay input control</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/handsrelay/handsrelay-resume</annotate>
+  </action>
+</policyconfig>
