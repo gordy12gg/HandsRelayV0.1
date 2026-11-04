@@ -81,9 +81,18 @@ start_guardian () {  # $1 = actuator kind
   write_config "$1"
   sudo pkill -f "guardian.py --config $RUN_DIR/config.json" 2>/dev/null
   sleep 0.5
+  rm -f "$GUARDIAN_SOCK"
   sudo nohup "$PY" "$LINUX_DIR/guardian.py" --config "$RUN_DIR/config.json" \
     > "$RUN_DIR/guardian-$1.log" 2>&1 &
-  for i in $(seq 1 30); do [ -S "$GUARDIAN_SOCK" ] && return 0; sleep 0.3; done
+  for i in $(seq 1 40); do
+    if SMOKE_GUARDIAN_SOCKET="$GUARDIAN_SOCK" "$PY" -c "
+import os, sys
+sys.path.insert(0, \"$LINUX_DIR\")
+from guardian_client import GuardianClient
+GuardianClient(os.environ[\"SMOKE_GUARDIAN_SOCKET\"]).state()
+" 2>/dev/null; then return 0; fi
+    sleep 0.3
+  done
   echo "FAIL: guardian socket never appeared; see run/guardian-$1.log"
   return 1
 }
@@ -95,7 +104,7 @@ start_guardian fake || exit 1
 
 echo "Now resume via pkexec — a password prompt should appear (fresh auth,"
 echo "every time; nothing cached). This is the ONLY resume path."
-pkexec /usr/lib/handsrelay/handsrelay-resume
+pkexec /usr/lib/handsrelay/handsrelay-resume "$GUARDIAN_SOCK"
 "$PY" - <<EOF
 import sys
 sys.path.insert(0, "$LINUX_DIR")
@@ -140,21 +149,22 @@ else
   if [ -z "$EDITOR" ]; then
     echo "SKIP stage3: no known text editor found (kate/gedit/gnome-text-editor/code)"
   else
+    SMK="hr-smoke-$$"
     start_guardian ydotool || exit 1
-    pkexec /usr/lib/handsrelay/handsrelay-resume
-    HANDS_SECRET=<redacted> HANDS_GUARDIAN_SOCKET="$GUARDIAN_SOCK" \
+    pkexec /usr/lib/handsrelay/handsrelay-resume "$GUARDIAN_SOCK"
+    HANDS_SECRET="$SMK" HANDS_GUARDIAN_SOCKET="$GUARDIAN_SOCK" \
       nohup "$PY" "$LINUX_DIR/hands_linux.py" > "$RUN_DIR/app.log" 2>&1 &
     APP_PID=$!
     sleep 2
-    echo "state:  $(curl -s -H 'X-Secret: <redacted>' http://127.0.0.1:5000/state)"
-    curl -s -H 'X-Secret: <redacted>' http://127.0.0.1:5000/screenshot \
+    echo "state:  $(curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/state)"
+    curl -s -H "X-Secret: $SMK" http://127.0.0.1:5000/screenshot \
       -o "$RUN_DIR/app-shot.png" -D - | grep -i "x-screen\|HTTP/" \
       && echo "app screenshot saved: $RUN_DIR/app-shot.png"
     nohup "$EDITOR" >/dev/null 2>&1 &
     sleep 3
-    curl -s -X POST -H 'X-Secret: <redacted>' -H 'Content-Type: application/json' \
+    curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
       -d '{"x": 500, "y": 300}' http://127.0.0.1:5000/click; echo " <- click"
-    curl -s -X POST -H 'X-Secret: <redacted>' -H 'Content-Type: application/json' \
+    curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
       -d '{"text": "handsrelay p1 ok"}' http://127.0.0.1:5000/type; echo " <- type"
     echo
     echo "LOOK AT THE EDITOR: did 'handsrelay p1 ok' get typed into it?"

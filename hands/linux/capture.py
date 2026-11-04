@@ -47,7 +47,7 @@ import threading
 from PIL import Image
 
 KWIN_BUS_NAME = "org.kde.KWin"
-KWIN_OBJECT_PATH = "/KWin"
+KWIN_OBJECT_PATH = "/org/kde/KWin/ScreenShot2"
 SCREENSHOT2_INTERFACE = "org.kde.KWin.ScreenShot2"
 
 # Inline introspection for org.kde.KWin.ScreenShot2. Signatures match the
