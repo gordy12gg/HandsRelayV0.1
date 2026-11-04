@@ -8,7 +8,9 @@ NoDisplay=true
 Categories=Utility;
 # KWin restricted D-Bus interfaces this app identity may use:
 # ScreenShot2 for capture, EIS.RemoteDesktop for the follow-up EisActuator
-# handshake (the fd is passed to the guardian; injection stays there).
+# handshake (the fd is passed to the guardian; injection stays there),
+# and Scripting for the P2 window list/focus bridge (session-side
+# observation + activation only; scripting cannot synthesize input).
 # Keep this file's contents pinned and auditable (SCOPE.md §3): the
 # interface grant attaches to this identity.
-X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2;org.kde.KWin.EIS.RemoteDesktop
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2;org.kde.KWin.EIS.RemoteDesktop;org.kde.KWin.Scripting
