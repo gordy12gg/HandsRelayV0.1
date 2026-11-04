@@ -211,8 +211,10 @@ plain-assert runners and pytest.
    taken the selection — the route's first live set reported a
    false failure while the text had landed. `set_text` now uses a
    short timeout and verifies by read-back (1816a8e). Live retest
-   + the `/type` paste path against a real target: pending the
-   same session's next battery.
+   passed (`/clipboard/set` ok, text round-trips), and the `/type`
+   paste path pasted a 57-char line into Kate in one shot
+   (`method_used: "paste"`) with the prior clipboard content
+   faithfully restored afterwards (owner-confirmed in Kate).
 6. **Keep-awake:** engages at app start ("keeping this PC awake
    while the relay runs") and `/state` reports
    `"keep_awake": true`. Blanking-vs-lock distinction not yet
@@ -221,6 +223,8 @@ plain-assert runners and pytest.
    "first rect is primary" is trivially correct here; `/monitors`
    returns it with name + primary after the ANSI fix. The
    two-monitor question stays open until such a layout exists.
-8. **File-drop:** live round trip pending the same session's next
-   battery; the packaged-unit allowlist env question carries to
-   section D (production install).
+8. **File-drop: WORKS live.** begin/chunk/commit round trip into
+   ~/hands-drop: 19-byte file, SHA-256 verified at commit, content
+   intact. The allowlist came from HANDS_FILEDROP_DIRS in the app
+   environment; the production user unit carries the same variable
+   via its EnvironmentFile (section D).
