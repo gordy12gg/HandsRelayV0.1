@@ -176,3 +176,51 @@ plain-assert runners and pytest.
    file in the same dir) — code-identical to upstream, but the
    allowlist env must be present in the packaged user unit's
    environment, which is a P3 packaging decision.
+
+## Verified on-box (2026-11-04, Gordon-PC, Plasma 6.8.2, desk session C)
+
+1. **Return channel: WORKS.** A loadScript'd script's `callDBus`
+   reaches the one-shot bridge exported by the unprivileged
+   session-app process; `/windows` returned the real window list
+   (plasmashell desktop + panel, two Firefox windows, Konsole with
+   `focused: true` matching reality). No fallback needed.
+2. **loadScript is not restricted** for an unprivileged same-session
+   process; no `.desktop` identity was involved in the test process.
+   BUT the interface names are the Plasma 6 lowercase forms —
+   `org.kde.kwin.Scripting` at `/Scripting`, `org.kde.kwin.Script`
+   at `/Scripting/Script<id>` (gdbus introspect; the pre-6
+   `org.kde.KWin.*` spelling gets UnknownInterface). Fixed in
+   1816a8e. Two bridge bugs were found and fixed on the way:
+   dbus-fast raises TypeError at class-definition time if a
+   @method carries a `-> None` annotation under
+   `from __future__ import annotations` (annotation stringizes to
+   "None" -> signature None), and kscreen-doctor colourises output
+   even when piped, which parsed to zero monitors until ANSI codes
+   were stripped in `capture.monitor_rects`.
+3. **API surface as designed:** `workspace.windowList()`,
+   `internalId` (braced UUID strings, consistent between list and
+   focus), `Window.pid`, `frameGeometry` all present. Activation
+   via `workspace.activeWindow = w` honoured live: `/focus` on the
+   Firefox window raised it to the front (owner-confirmed).
+4. **visible semantics:** kept as designed (not minimised + on
+   current desktop). All current-desktop windows reported
+   `visible: true` correctly; no other-desktop window existed
+   during the test, so the upstream divergence stays theoretical.
+5. **wl-clipboard:** `wl-paste` reads fine. `wl-copy`'s parent
+   lingers past the subprocess timeout while its forked holder has
+   taken the selection — the route's first live set reported a
+   false failure while the text had landed. `set_text` now uses a
+   short timeout and verifies by read-back (1816a8e). Live retest
+   + the `/type` paste path against a real target: pending the
+   same session's next battery.
+6. **Keep-awake:** engages at app start ("keeping this PC awake
+   while the relay runs") and `/state` reports
+   `"keep_awake": true`. Blanking-vs-lock distinction not yet
+   exercised (needs an idle wait).
+7. **Monitors:** the box has a SINGLE monitor (DP-3 2560x1440), so
+   "first rect is primary" is trivially correct here; `/monitors`
+   returns it with name + primary after the ANSI fix. The
+   two-monitor question stays open until such a layout exists.
+8. **File-drop:** live round trip pending the same session's next
+   battery; the packaged-unit allowlist env question carries to
+   section D (production install).
