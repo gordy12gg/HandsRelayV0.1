@@ -884,7 +884,9 @@ def main():
     try:
         import guardian_client as guardian_client_module
 
-        guardian = guardian_client_module.GuardianClient()
+        sock = os.environ.get("HANDS_GUARDIAN_SOCKET")
+        guardian = (guardian_client_module.GuardianClient(sock) if sock
+                    else guardian_client_module.GuardianClient())
     except Exception:
         guardian = SocketGuardianClient()
     try:
