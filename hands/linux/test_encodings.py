@@ -32,15 +32,32 @@ def test_move_encoding():
     actuator.subprocess.run = fake_run
     try:
         act = actuator.YdotoolActuator("/tmp/yd.sock")
+        act.begin_act()
         act.move(500, 300)
+        moves = [c for c in calls if c[1] == "mousemove"]
+        # First call is the corner slam; the rest are relative chunks
+        # of at most 64 px that must sum to exactly (500, 300).
+        assert moves[0] == ["ydotool", "mousemove", "-x", "-100000",
+                            "-y", "-100000"], moves[0]
+        sx = sy = 0
+        for c in moves[1:]:
+            assert "--absolute" not in c
+            cx, cy = int(c[3]), int(c[5])
+            assert abs(cx) <= 64 and abs(cy) <= 64, c
+            sx += cx
+            sy += cy
+        assert (sx, sy) == (500, 300), (sx, sy)
+        assert act.position() == (500, 300)
+        # Anchored now: a follow-up move is deltas only, no second slam.
+        calls.clear()
+        act.move(560, 300)
+        assert calls == [["ydotool", "mousemove", "-x", "60",
+                          "-y", "0"]], calls
         act.scroll(0, 3)
         act.key(28, True)
     finally:
         actuator.subprocess.run = orig
-    assert calls[0] == ["ydotool", "mousemove", "--absolute",
-                        "-x", "500", "-y", "300"], calls[0]
-    assert act.position() == (500, 300)
-    print("PASS move encoding: %r" % (calls[0],))
+    print("PASS move encoding: corner-slam + chunked relative deltas")
 
 
 def test_raw_reconstruction():

@@ -396,6 +396,9 @@ class Guardian:
         with self._act_lock:
             if self.latch.is_stopped():
                 return {"ok": False, "error_code": "emergency_stop"}
+            begin = getattr(self.actuator, "begin_act", None)
+            if callable(begin):
+                begin()
             try:
                 for step in steps:
                     if self.latch.is_stopped():

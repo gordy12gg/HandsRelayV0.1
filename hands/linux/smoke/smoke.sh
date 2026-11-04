@@ -146,6 +146,22 @@ else
   echo "FAIL stage2: .desktop-identity capture (no PNG appeared)"
 fi
 
+# ---------- stage 2.5: pointer diagnosis (why absolute lands at 0,0) ----
+echo "--- stage 2.5: pointer diagnosis"
+if [ "$HAVE_YDOTOOL" = "1" ]; then
+  echo "ydotool mousemove help:"
+  ydotool help mousemove 2>&1 | head -15 || ydotool mousemove --help 2>&1 | head -15
+  sudo ydotoold -p /tmp/hr-diag.sock -o 0666 >/dev/null 2>&1 &
+  sleep 1
+  YDOTOOL_SOCKET=/tmp/hr-diag.sock ydotool mousemove --absolute -x 1280 -y 720
+  sleep 1
+  YDOTOOL_SOCKET=/tmp/hr-diag.sock ydotool mousemove --absolute -x 100000 -y 100000
+  sleep 1
+  read -r -p "Pointer now: TL corner / center / BR corner / elsewhere? " PTR
+  echo "stage2.5: pointer after absolute moves: $PTR"
+  sudo pkill -f "ydotoold -p /tmp/hr-diag.sock" 2>/dev/null
+fi
+
 # ---------- stage 3: full loop, real actuation -----------------------------
 echo "--- stage 3: full loop (ydotool actuation through the guardian)"
 if [ "$HAVE_YDOTOOL" = "0" ]; then

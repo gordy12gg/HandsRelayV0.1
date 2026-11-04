@@ -197,6 +197,13 @@ class Actuator:
         with self._state_lock:
             return (sorted(self._held_keys), sorted(self._held_buttons))
 
+    def begin_act(self):
+        """Hook called by the guardian before each act's first step.
+
+        Default: nothing. Actuators that cache compositor-side state
+        (e.g. the ydotool pointer anchor) reset it here.
+        """
+
     def release_all(self):
         """Key-up/button-up sweep. Returns how many inputs were released.
 
@@ -242,11 +249,17 @@ class YdotoolActuator(Actuator):
     ydotoold on /run/handsrelay-guardian/ydotoold.sock); the CLI finds
     it through the YDOTOOL_SOCKET environment variable.
 
-    Absolute-positioning caveat (SCOPE §5.2): ydotool absolute moves are
-    best-effort and there is no way to read the true pointer position
-    back through uinput, so this actuator tracks the last position it
-    commanded and position() returns that tracked value (None before
-    the first move).
+    Absolute positioning through ydotool proved unreliable on the
+    target box (P1 smoke runs 3-5): `mousemove --absolute -x/-y` still
+    landed the pointer on (0, 0) — the compositor scales the uinput
+    absolute axes by a range that is not the screen size. This actuator
+    therefore moves RELATIVELY: each act starts by slamming the pointer
+    into the (0, 0) corner with one huge relative move (relative moves
+    clamp at the screen edge, so the corner is a certain anchor), then
+    walks to the target in <=64 px chunks (small deltas stay ahead of
+    any pointer-acceleration curve). position() returns the tracked
+    position; begin_act() re-arms the anchor for the next act, since
+    the owner may have moved the pointer between acts.
     """
 
     name = "ydotool"
@@ -256,7 +269,13 @@ class YdotoolActuator(Actuator):
         self.socket_path = socket_path
         self.ydotool_bin = ydotool_bin
         self._pos = None
+        self._anchored = False
         self._run_lock = threading.Lock()
+
+    def begin_act(self):
+        # The owner may have moved the pointer since the last act; the
+        # next move() re-anchors at the corner before walking out.
+        self._anchored = False
 
     def _run(self, args):
         env = dict(os.environ)
@@ -278,11 +297,25 @@ class YdotoolActuator(Actuator):
                 "ydotool %s failed (rc=%d): %s"
                 % (args[0], proc.returncode, proc.stderr.strip()))
 
+    # One huge relative move always ends clamped in the corner.
+    _SLAM = 100000
+    # Per-call relative step cap (see class docstring).
+    _CHUNK = 64
+
     def move(self, x, y):
         x, y = int(x), int(y)
-        # ydotool 1.x takes -x/-y flags; positional args are ignored and
-        # the move lands on (0, 0) — found the hard way in the P1 smoke.
-        self._run(["mousemove", "--absolute", "-x", str(x), "-y", str(y)])
+        if not self._anchored:
+            self._run(["mousemove", "-x", str(-self._SLAM),
+                       "-y", str(-self._SLAM)])
+            self._pos = (0, 0)
+            self._anchored = True
+        dx, dy = x - self._pos[0], y - self._pos[1]
+        while dx or dy:
+            cx = max(-self._CHUNK, min(self._CHUNK, dx))
+            cy = max(-self._CHUNK, min(self._CHUNK, dy))
+            self._run(["mousemove", "-x", str(cx), "-y", str(cy)])
+            dx -= cx
+            dy -= cy
         self._pos = (x, y)
 
     def button(self, button, down):
