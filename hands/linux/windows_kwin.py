@@ -11,9 +11,9 @@ How it works
 ------------
 KWin exposes a scripting bridge on the session bus:
 ``org.kde.KWin`` object ``/Scripting`` (interface
-``org.kde.KWin.Scripting``) loads a JavaScript file with
+``org.kde.kwin.Scripting``) loads a JavaScript file with
 ``loadScript(path, pluginName) -> id``; the loaded script lives at
-``/Scripting/Script<id>`` (interface ``org.kde.KWin.Script``) and runs
+``/Scripting/Script<id>`` (interface ``org.kde.kwin.Script``) and runs
 when its ``run()`` method is called. Scripts see the ``workspace``
 object: ``workspace.windowList()`` (Plasma 6; ``clientList()`` before),
 each window carrying ``internalId`` (a QUuid — our HWND stand-in),
@@ -31,7 +31,7 @@ text; the script JSON-encodes its result and invokes
 same-session service exported by an unprivileged process, and whether
 ``loadScript`` itself is gated behind KWin's restricted-interface
 identity (the shipped ``.desktop`` file now also lists
-``org.kde.KWin.Scripting``), **must be verified on the box** — see
+``org.kde.kwin.Scripting``), **must be verified on the box** — see
 DESIGN-P2.md. Nothing here has run against a live KWin yet; the module
 is built to the documented interface and its pure pieces (script
 building, payload mapping) are unit-tested headless.
@@ -52,8 +52,11 @@ import tempfile
 
 KWIN_BUS_NAME = "org.kde.KWin"
 SCRIPTING_PATH = "/Scripting"
-SCRIPTING_INTERFACE = "org.kde.KWin.Scripting"
-SCRIPT_INTERFACE = "org.kde.KWin.Script"
+# Interface names are lowercase "kwin" on Plasma 6 (verified on-box
+# 2026-11-04 with gdbus introspect: /Scripting implements
+# org.kde.kwin.Scripting; the org.kde.KWin.* spelling is pre-6).
+SCRIPTING_INTERFACE = "org.kde.kwin.Scripting"
+SCRIPT_INTERFACE = "org.kde.kwin.Script"
 BRIDGE_INTERFACE = "org.gordy.handsrelay.ScriptBridge"
 BRIDGE_PATH = "/org/gordy/handsrelay/ScriptBridge"
 
@@ -61,7 +64,7 @@ BRIDGE_PATH = "/org/gordy/handsrelay/ScriptBridge"
 # capture.py's ScreenShot2 XML).
 SCRIPTING_XML = """
 <node>
-  <interface name="org.kde.KWin.Scripting">
+  <interface name="org.kde.kwin.Scripting">
     <method name="loadScript">
       <arg name="filePath" type="s" direction="in"/>
       <arg name="pluginName" type="s" direction="in"/>
@@ -76,7 +79,7 @@ SCRIPTING_XML = """
       <arg name="loaded" type="b" direction="out"/>
     </method>
   </interface>
-  <interface name="org.kde.KWin.Script">
+  <interface name="org.kde.kwin.Script">
     <method name="run"/>
     <method name="stop"/>
   </interface>
@@ -255,7 +258,12 @@ class KWinWindowsBackend:
                 super().__init__(BRIDGE_INTERFACE)
 
             @method()
-            def Deliver(self, got_token: "s", payload: "s") -> None:
+            # No "-> None" return annotation here: this module uses
+            # "from __future__ import annotations", which stringizes it
+            # to "None", and dbus-fast's method parser turns that into
+            # signature=None and raises TypeError at class-definition
+            # time (found on-box 2026-11-04; reproduced headless).
+            def Deliver(self, got_token: "s", payload: "s"):
                 if got_token == token and not future.done():
                     future.set_result(payload)
 

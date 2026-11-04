@@ -307,6 +307,67 @@ def test_wl_clipboard_backend_with_fake_run():
         assert "wl-copy failed" in str(exc)
 
 
+def test_monitor_rects_strips_ansi():
+    """On-box 2026-11-04: kscreen-doctor colourises its output even
+    when piped (SGR sequences around labels), which silently parsed
+    to zero monitors. monitor_rects must strip ANSI codes first."""
+    import capture as capture_mod
+
+    colorized = (
+        "\x1b[01;32mOutput: \x1b[0;0m1 DP-3 039392cf-b232-48ff-b3cd-a6e22420ace0\n"
+        "\t\x1b[01;32menabled\x1b[0;0m\n"
+        "\t\x1b[01;32mconnected\x1b[0;0m\n"
+        "\t\x1b[01;34mModes: \x1b[0;0m 1:2560x1440@59.94*\n"
+        "\tGeometry: 0,0 2560x1440\n"
+        "\tScale: 1\n"
+    )
+
+    class Proc:
+        returncode = 0
+        stdout = colorized
+        stderr = ""
+
+    real_run = capture_mod.subprocess.run
+    capture_mod.subprocess.run = lambda *a, **k: Proc()
+    try:
+        rects = capture_mod.monitor_rects()
+    finally:
+        capture_mod.subprocess.run = real_run
+    assert rects == [{"name": "DP-3", "x": 0, "y": 0, "w": 2560, "h": 1440}], rects
+
+
+def test_clipboard_set_timeout_readback():
+    """On-box 2026-11-04: wl-copy's parent can linger past the timeout
+    while the forked holder has already taken the selection. set_text
+    must verify by read-back instead of reporting a false failure —
+    and must still raise when the text did not land."""
+    import subprocess as sp
+
+    class Proc:
+        def __init__(self, rc, out=b"", err=b""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def hanging_run(argv, **kwargs):
+        if argv[0] == "wl-paste":
+            return Proc(0, "landed".encode())
+        raise sp.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 2))
+
+    WlClipboard(run=hanging_run).set_text("landed")  # must not raise
+
+    def hanging_run_mismatch(argv, **kwargs):
+        if argv[0] == "wl-paste":
+            return Proc(0, "something else".encode())
+        raise sp.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 2))
+
+    try:
+        WlClipboard(run=hanging_run_mismatch).set_text("landed")
+        raise AssertionError("set_text should have raised")
+    except OSError as exc:
+        assert "did not take" in str(exc)
+
+
 # ---- /type paste path ----------------------------------------------------------
 
 

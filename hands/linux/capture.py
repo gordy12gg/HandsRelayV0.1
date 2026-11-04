@@ -240,6 +240,7 @@ def grab(rect: dict | None = None, monitor_name: str | None = None,
 
 _OUTPUT_RE = re.compile(r"^Output:\s+\d+\s+(\S+)\s")
 _GEOMETRY_RE = re.compile(r"^\s*Geometry:\s+(-?\d+),(-?\d+)\s+(\d+)x(\d+)\s*$")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def monitor_rects() -> list[dict]:
@@ -261,9 +262,14 @@ def monitor_rects() -> list[dict]:
             f"kscreen-doctor -o failed ({proc.returncode}): "
             f"{proc.stderr.strip()}")
 
+    # kscreen-doctor colourises its output even when piped (ANSI SGR
+    # sequences around labels and values, found on-box 2026-11-04);
+    # strip them or no line ever matches the patterns below.
+    clean = _ANSI_RE.sub("", proc.stdout)
+
     monitors: list[dict] = []
     current: dict | None = None
-    for line in proc.stdout.splitlines():
+    for line in clean.splitlines():
         out_match = _OUTPUT_RE.match(line)
         if out_match:
             current = {"name": out_match.group(1)}
