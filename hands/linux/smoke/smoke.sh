@@ -171,8 +171,22 @@ else
     echo "app screenshot HTTP $CODE -> $RUN_DIR/app-shot.png"
     echo "HANDS OFF mouse and keyboard for the next few seconds…"
     : > "$RUN_DIR/scratch.txt"
-    nohup "$EDITOR" "$RUN_DIR/scratch.txt" >/dev/null 2>&1 &
-    sleep 3
+    # Launch through the desktop-entry machinery (gio launch carries an
+    # xdg-activation token): a bare nohup launch gets focus-stealing-
+    # prevented by KWin and the editor opens BEHIND the current window
+    # (runs 3-5: Kate sat in the taskbar while the click hit Firefox).
+    KATE_DESKTOP=""
+    for d in /usr/share/applications/org.kde.kate.desktop \
+             /usr/share/applications/kate.desktop; do
+      [ -f "$d" ] && { KATE_DESKTOP="$d"; break; }
+    done
+    if [ "$EDITOR" = "kate" ] && [ -n "$KATE_DESKTOP" ] \
+       && command -v gio >/dev/null; then
+      gio launch "$KATE_DESKTOP" "$RUN_DIR/scratch.txt" >/dev/null 2>&1
+    else
+      nohup "$EDITOR" "$RUN_DIR/scratch.txt" >/dev/null 2>&1 &
+    fi
+    sleep 4
     curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
       -d '{"x": 500, "y": 300}' http://127.0.0.1:5000/click; echo " <- click"
     curl -s -X POST -H "X-Secret: $SMK" -H 'Content-Type: application/json' \
