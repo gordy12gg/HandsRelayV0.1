@@ -280,7 +280,9 @@ class YdotoolActuator(Actuator):
 
     def move(self, x, y):
         x, y = int(x), int(y)
-        self._run(["mousemove", "--absolute", str(x), str(y)])
+        # ydotool 1.x takes -x/-y flags; positional args are ignored and
+        # the move lands on (0, 0) — found the hard way in the P1 smoke.
+        self._run(["mousemove", "--absolute", "-x", str(x), "-y", str(y)])
         self._pos = (x, y)
 
     def button(self, button, down):

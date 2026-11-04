@@ -133,7 +133,8 @@ async def _capture_async(member: str, args_prefix: list, options: dict) -> bytes
         method = getattr(iface, "call_" + member)
         # The fd goes in as a plain int; dbus-fast moves it into the
         # message's unix_fds array (see module docstring, "FD PASSING SPOT").
-        await method(*args_prefix, options, write_fd, unpack_variants=True)
+        results = await method(*args_prefix, options, write_fd,
+                               unpack_variants=True)
     finally:
         # Our copy of the write end closes so the reader sees EOF once
         # KWin's dup'd copy is done; KWin's side closes when it finishes.
@@ -148,13 +149,38 @@ async def _capture_async(member: str, args_prefix: list, options: dict) -> bytes
     if not data:
         raise RuntimeError(
             f"ScreenShot2 {member} completed but produced no image data")
-    return data
+    return data, results if isinstance(results, dict) else {}
+
+
+# QImage::Format values KWin may report for raw pipe data. In memory on
+# little-endian these 32-bit formats are all B,G,R,A byte order.
+_QIMAGE_FORMATS_32 = {4, 5, 6, 24, 25, 26}
+
+
+def _image_from_raw(data: bytes, results: dict) -> Image.Image | None:
+    """Rebuild an image from raw pipe bytes + the results dict, if the
+    dict carries geometry. ScreenShot2's pipe payload turned out not to
+    be the PNG this module first assumed (P1 smoke, run 4)."""
+    try:
+        w = int(results["width"])
+        h = int(results["height"])
+        fmt = int(results.get("format", 5))
+        stride = int(results.get("stride", w * 4))
+    except Exception:
+        return None
+    if fmt not in _QIMAGE_FORMATS_32 or stride < w * 4:
+        return None
+    if len(data) < stride * h:
+        return None
+    img = Image.frombytes("RGBA", (w, h), data[: stride * h],
+                          "raw", "BGRA", stride, 1)
+    return img.convert("RGB")
 
 
 def _capture(member: str, args_prefix: list, options: dict | None) -> Image.Image:
     opts = dict(options) if options else {}
     try:
-        data = asyncio.run(_capture_async(member, args_prefix, opts))
+        data, results = asyncio.run(_capture_async(member, args_prefix, opts))
     except RuntimeError:
         raise
     except Exception as exc:  # DBusError and friends -> one clear surface
@@ -162,11 +188,15 @@ def _capture(member: str, args_prefix: list, options: dict | None) -> Image.Imag
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
-    except Exception as exc:
-        raise RuntimeError(
-            f"ScreenShot2 {member} returned undecodable image data: {exc}"
-        ) from exc
-    return img
+        return img
+    except Exception:
+        pass
+    raw = _image_from_raw(data, results)
+    if raw is not None:
+        return raw
+    raise RuntimeError(
+        f"ScreenShot2 {member} returned undecodable image data: "
+        f"len={len(data)} head={data[:16].hex()} results={results!r}")
 
 
 def grab(rect: dict | None = None, monitor_name: str | None = None,
