@@ -282,7 +282,8 @@ class SocketGuardianClient:
 # ---- the app -------------------------------------------------------------
 
 
-def create_app(guardian_client, capture_module, secret=None, rng=None):
+def create_app(guardian_client, capture_module, secret=None, rng=None,
+               files_root=None):
     """Build the Flask app around injected guardian/capture backends."""
     if secret is None:
         secret = os.environ.get("HANDS_SECRET") or secrets_mod.token_urlsafe(24)
@@ -415,6 +416,11 @@ def create_app(guardian_client, capture_module, secret=None, rng=None):
             return jsonify({"ok": False, "error": "bad secret"}), 401
         if request.path == "/state":
             return  # /state answers while stopped and reports the latch
+        if request.path in ("/files", "/files/download"):
+            return  # read-only browsing: the stop governs INPUT, and
+            # these routes hold no injection capability (secret-gated
+            # above). Requiring a polkit resume just to read files
+            # would invert the safety model.
         stopped, _st = guardian_stopped()
         if stopped:
             return jsonify({"error_code": "emergency_stop"}), 423
@@ -451,6 +457,57 @@ def create_app(guardian_client, capture_module, secret=None, rng=None):
             body["stopped_reason"] = st.get("reason")
             body["stopped_since"] = st.get("since")
         return body
+
+    # ---- read-only file browsing (confined root) ----------------------
+    # Session-side and read-only: no guardian involvement, no injection.
+    # The root defaults to ~/Downloads (HANDS_FILES_ROOT overrides);
+    # every path is realpath-resolved and must stay inside it.
+
+    files_root_real = os.path.realpath(
+        files_root or os.environ.get("HANDS_FILES_ROOT")
+        or os.path.expanduser("~/Downloads"))
+
+    def _resolve_in_root(rel):
+        rel = (rel or "").strip()
+        if os.path.isabs(rel):
+            return None
+        cand = os.path.realpath(os.path.join(files_root_real, rel))
+        if os.path.commonpath([cand, files_root_real]) != files_root_real:
+            return None
+        return cand
+
+    @app.get("/files")
+    def files_list():
+        target = _resolve_in_root(request.args.get("path", ""))
+        if target is None:
+            return jsonify({"ok": False,
+                            "error": "path escapes files root"}), 403
+        if not os.path.isdir(target):
+            return jsonify({"ok": False, "error": "not a directory"}), 404
+        entries = []
+        for name in os.listdir(target):
+            p = os.path.join(target, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            entries.append({"name": name, "dir": os.path.isdir(p),
+                            "size": st.st_size, "mtime": st.st_mtime})
+        entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+        rel_out = os.path.relpath(target, files_root_real)
+        return {"ok": True, "root": files_root_real,
+                "path": "" if rel_out == "." else rel_out,
+                "entries": entries}
+
+    @app.get("/files/download")
+    def files_download():
+        target = _resolve_in_root(request.args.get("path", ""))
+        if target is None:
+            return jsonify({"ok": False,
+                            "error": "path escapes files root"}), 403
+        if not os.path.isfile(target):
+            return jsonify({"ok": False, "error": "not a file"}), 404
+        return send_file(target, as_attachment=True)
 
     # ---- capture -----------------------------------------------------
 
@@ -897,8 +954,10 @@ def main():
     app = create_app(guardian, capture_module)
     # The packaged app displays the per-launch secret in its window;
     # for P1 dev the stdout line is where an operator copies it from.
+    # HANDS_BIND exists so a deliberate, owner-launched instance can
+    # listen on the tailnet address; the default stays loopback.
     print(f"SECRET {app.hands_secret}", flush=True)
-    app.run(host="127.0.0.1", port=PORT)
+    app.run(host=os.environ.get("HANDS_BIND", "127.0.0.1"), port=PORT)
 
 
 if __name__ == "__main__":
