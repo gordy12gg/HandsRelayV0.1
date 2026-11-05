@@ -206,6 +206,7 @@ class EvdevMonitor(threading.Thread):
         self._patterns = [p.lower() for p in
                           guardian.config["virtual_device_name_patterns"]]
         self._down = set()  # evdev keycodes currently held (all devices)
+        self._abs_last = {}  # (device name, axis code) -> last EV_ABS value
         try:
             self._panic_codes = frozenset(
                 keycode_for(k) for k in guardian.config["panic_keys"])
@@ -260,15 +261,46 @@ class EvdevMonitor(threading.Thread):
             for event in dev.read_loop():
                 if self.guardian.shutdown.is_set():
                     return
-                self._on_event(event)
+                self._on_event(event, dev.name)
         except OSError as e:
             log.warning("device %s stopped: %s", dev.path, e)
         except Exception as e:
             log.error("evdev reader for %s died: %s", dev.path, e)
 
-    def _on_event(self, event):
-        # Any event from a physical device is owner activity.
-        self.guardian.note_owner_activity()
+    # Owner-activity classification (fixed on-box 2026-11-04): a
+    # resting DualSense streams ~1,200 evdev events/sec of IMU and
+    # stick noise, which pinned idle at ~0 ms and made every act
+    # refuse as "owner active". Deliberate input is activity; sensor
+    # noise is not:
+    #   EV_KEY / EV_REL -> always activity (presses, clicks, motion,
+    #                      wheel — relative deltas only exist when the
+    #                      device really moves)
+    #   EV_ABS          -> activity only past a dead-zone (hat
+    #                      switches: any change), and never on
+    #                      motion-sensor nodes, whose axes are IMU
+    #   EV_SYN / EV_MSC -> bookkeeping, never activity
+    _ABS_DEADZONE = 6
+    _HAT_CODES = frozenset({0x10, 0x11, 0x12, 0x13})  # ABS_HAT0X..HAT1Y
+
+    def _is_owner_activity(self, event, dev_name):
+        if event.type == 1 or event.type == 2:   # EV_KEY, EV_REL
+            return True
+        if event.type != 3:                      # not EV_ABS
+            return False
+        if "motion" in (dev_name or "").lower():
+            return False
+        key = (dev_name, event.code)
+        last = self._abs_last.get(key)
+        self._abs_last[key] = event.value
+        if last is None:
+            return False
+        if event.code in self._HAT_CODES:
+            return event.value != last
+        return abs(event.value - last) >= self._ABS_DEADZONE
+
+    def _on_event(self, event, dev_name=""):
+        if self._is_owner_activity(event, dev_name):
+            self.guardian.note_owner_activity()
         if not self._panic_codes:
             return
         # EV_KEY == 1 in evdev.ecodes; avoid a hard ecodes import here.

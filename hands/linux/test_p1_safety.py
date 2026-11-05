@@ -244,6 +244,46 @@ def test_window_liveness_watchdog():
         assert "window-watchdog" in (g.latch.snapshot()["reason"] or "")
 
 
+def test_owner_activity_ignores_sensor_noise():
+    """On-box 2026-11-04: a resting DualSense streams ~1,200 evdev
+    events/sec (IMU + stick noise). Counting every event as owner
+    activity pinned idle at ~0 and refused every act. Only deliberate
+    input may count."""
+    class Ev:
+        def __init__(self, type, code, value):
+            self.type, self.code, self.value = type, code, value
+
+    with tempfile.TemporaryDirectory() as tmp:
+        g = make_guardian(tmp)
+        calls = []
+        g.note_owner_activity = lambda: calls.append(1)
+        mon = guardian_mod.EvdevMonitor(g)
+        motion = "Sony DualSense Motion Sensors"
+        pad = "Sony DualSense"
+        # IMU stream on the motion node: never activity, any delta.
+        for i in range(50):
+            mon._on_event(Ev(3, 3, 1000 + i * 40), motion)
+        # Stick jitter on the pad: baseline, then sub-dead-zone deltas.
+        mon._on_event(Ev(3, 0, 128), pad)
+        mon._on_event(Ev(3, 0, 130), pad)
+        mon._on_event(Ev(3, 0, 127), pad)
+        # Bookkeeping events: never activity.
+        mon._on_event(Ev(0, 0, 0), pad)   # EV_SYN
+        mon._on_event(Ev(4, 4, 0), pad)   # EV_MSC
+        assert calls == [], calls
+        # A deliberate stick throw (delta >= dead-zone) counts.
+        mon._on_event(Ev(3, 0, 200), pad)
+        assert len(calls) == 1, calls
+        # A hat press (delta 1 on a hat axis) counts.
+        mon._on_event(Ev(3, 0x10, 0), pad)
+        mon._on_event(Ev(3, 0x10, 1), pad)
+        assert len(calls) == 2, calls
+        # Keys and relative motion always count.
+        mon._on_event(Ev(1, 30, 1), "Razer Razer BlackWidow V3")
+        mon._on_event(Ev(2, 0, 5), "Logitech G502")
+        assert len(calls) == 4, calls
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
