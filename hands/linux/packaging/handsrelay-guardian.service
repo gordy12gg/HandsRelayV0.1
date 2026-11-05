@@ -18,7 +18,10 @@ RestartSec=2
 # /run/handsrelay-guardian (guardian.sock, ydotoold.sock) and
 # /var/lib/handsrelay-guardian (latch.json), created root-owned.
 RuntimeDirectory=handsrelay-guardian
-RuntimeDirectoryMode=0750
+# 0751: traverse-only, so the session user can reach guardian.sock
+# inside; the socket itself stays group-locked (handsrelay, 0660).
+# (0750 root:root made the guardian unreachable in production.)
+RuntimeDirectoryMode=0751
 StateDirectory=handsrelay-guardian
 StateDirectoryMode=0700
 
@@ -39,7 +42,10 @@ RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/run/handsrelay-guardian /var/lib/handsrelay-guardian /dev/input /dev/uinput
 DevicePolicy=closed
 DeviceAllow=/dev/uinput rw
-DeviceAllow=/dev/input rw
+# The input device GROUP, not the /dev/input directory path: a path
+# spec matches nothing the cgroup filter understands and the
+# guardian could open no physical device (found on-box 2026-11-04).
+DeviceAllow=char-input rw
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 
 [Install]
